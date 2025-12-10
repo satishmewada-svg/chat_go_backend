@@ -2,6 +2,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"log"
 	"my-ecomm/config"
 	"my-ecomm/models"
@@ -460,6 +461,29 @@ func (cc *ChatController) SendMessage(c *gin.Context) {
 
 	// Update room's updated_at
 	config.DB.Model(&room).Update("updated_at", message.CreatedAt)
+
+	// Broadcast message to WebSocket clients (non-blocking)
+	go func() {
+		wsResponse := map[string]interface{}{
+			"type":    "message",
+			"message": message,
+		}
+
+		if data, err := json.Marshal(wsResponse); err == nil {
+			hub := services.GetHub()
+			select {
+			case hub.Broadcast <- &services.BroadcastMessage{
+				RoomID:  uint(roomID),
+				Message: data,
+			}:
+				log.Printf("Broadcasted REST message %d to room %d", message.ID, roomID)
+			default:
+				log.Printf("Failed to broadcast message %d to room %d (channel full)", message.ID, roomID)
+			}
+		} else {
+			log.Printf("Failed to marshal WebSocket response: %v", err)
+		}
+	}()
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Message sent successfully",

@@ -73,9 +73,9 @@ var once sync.Once
 func GetHub() *Hub {
 	once.Do(func() {
 		hubInstance = &Hub{
-			Broadcast:  make(chan *BroadcastMessage),
-			Register:   make(chan *Client),
-			Unregister: make(chan *Client),
+			Broadcast:  make(chan *BroadcastMessage, 256), // Added buffer to prevent blocking
+			Register:   make(chan *Client, 256),
+			Unregister: make(chan *Client, 256),
 			Rooms:      make(map[uint]map[*Client]bool),
 		}
 		go hubInstance.Run()
@@ -120,20 +120,21 @@ func (h *Hub) Run() {
 			h.broadcastUserLeft(client)
 
 		case broadcast := <-h.Broadcast:
-			h.mu.RLock()
+			h.mu.Lock()
 			if clients, ok := h.Rooms[broadcast.RoomID]; ok {
 				log.Printf("Broadcasting message to room %d, clients: %d", broadcast.RoomID, len(clients))
 				for client := range clients {
 					select {
 					case client.Send <- broadcast.Message:
 					default:
+						// Client's send channel is full, close and remove
 						close(client.Send)
 						delete(clients, client)
 						log.Printf("Removed client %d from room %d (send failed)", client.ID, broadcast.RoomID)
 					}
 				}
 			}
-			h.mu.RUnlock()
+			h.mu.Unlock()
 
 		}
 	}
@@ -225,11 +226,7 @@ func (c *Client) ReadPump() {
 			continue
 
 		case "message", "chat":
-			msg.UserID = c.ID
-			msg.Username = c.Username
-			msg.Timestamp = time.Now()
-
-			// Save to DB
+			// Save to DB first
 			message := models.Message{
 				RoomID:   c.RoomID,
 				SenderID: c.ID,
@@ -237,13 +234,26 @@ func (c *Client) ReadPump() {
 			}
 			if err := config.DB.Create(&message).Error; err != nil {
 				log.Printf("Failed to save message: %v", err)
+				continue
 			}
 
-			if data, err := json.Marshal(msg); err == nil {
+			// Preload sender information
+			config.DB.Preload("Sender").First(&message, message.ID)
+
+			// Create the proper WebSocket response structure matching frontend expectations
+			wsResponse := map[string]interface{}{
+				"type":    "message",
+				"message": message,
+			}
+
+			if data, err := json.Marshal(wsResponse); err == nil {
 				c.Hub.Broadcast <- &BroadcastMessage{
 					RoomID:  c.RoomID,
 					Message: data,
 				}
+				log.Printf("Broadcasted message %d to room %d", message.ID, c.RoomID)
+			} else {
+				log.Printf("Failed to marshal message response: %v", err)
 			}
 
 		default:

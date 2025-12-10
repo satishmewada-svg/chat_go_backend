@@ -213,93 +213,15 @@ func (cc *ChatController) DeleteMessage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Message deleted successfully"})
 }
 
-// CreateDirectChat creates or retrieves a direct chat between two users
-func (cc *ChatController) CreateDirectChat(c *gin.Context) {
-	var req CreateDirectChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	currentUserID := c.GetUint("userID")
-	otherUserID := req.UserID
-
-	// Prevent creating direct chat with self
-	if currentUserID == otherUserID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot create direct chat with yourself"})
-		return
-	}
-
-	// Check if direct chat already exists
-	var existingRoom models.ChatRoom
-	err := config.DB.
-		Joins("JOIN room_members rm1 ON rm1.chat_room_id = chat_rooms.id AND rm1.user_id = ?", currentUserID).
-		Joins("JOIN room_members rm2 ON rm2.chat_room_id = chat_rooms.id AND rm2.user_id = ?", otherUserID).
-		Where("chat_rooms.is_group = ?", false).
-		Preload("Members").
-		Preload("Creator").
-		First(&existingRoom).Error
-
-	if err == nil {
-		// Direct chat already exists
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Direct chat already exists",
-			"room":    existingRoom,
-		})
-		return
-	}
-
-	// Create new direct chat
-	var otherUser models.User
-	if err := config.DB.First(&otherUser, otherUserID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	var currentUser models.User
-	if err := config.DB.First(&currentUser, currentUserID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Current user not found"})
-		return
-	}
-
-	// Create direct chat room (name not really used for direct chats)
-	room := models.ChatRoom{
-		Name:        currentUser.Name + " & " + otherUser.Name,
-		Description: "",
-		IsGroup:     false,
-		CreatorID:   currentUserID,
-	}
-
-	if err := config.DB.Create(&room).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create direct chat"})
-		return
-	}
-
-	// Add both users as members
-	if err := config.DB.Model(&room).Association("Members").Append([]models.User{currentUser, otherUser}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add members"})
-		return
-	}
-
-	// Load the room with members
-	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
-
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Direct chat created successfully",
-		"room":    room,
-	})
-}
-
 // GetUserRooms retrieves all rooms for the authenticated user
 func (cc *ChatController) GetUserRooms(c *gin.Context) {
 	userID := c.GetUint("userID")
 
-	// Get room IDs where user is a member
 	var roomIDs []uint
 	err := config.DB.Table("room_members").
-		Select("chat_room_id").
+		Select("room_id").
 		Where("user_id = ?", userID).
-		Pluck("chat_room_id", &roomIDs).Error
+		Pluck("room_id", &roomIDs).Error
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -605,4 +527,80 @@ func (cc *ChatController) HandleWebSocket(c *gin.Context) {
 
 	go client.WritePump()
 	client.ReadPump()
+}
+
+func (cc *ChatController) CreateDirectChat(c *gin.Context) {
+	var req CreateDirectChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	currentUserID := c.GetUint("userID")
+	otherUserID := req.UserID
+
+	// Prevent creating direct chat with self
+	if currentUserID == otherUserID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot create direct chat with yourself"})
+		return
+	}
+
+	// Check if direct chat already exists
+	var existingRoom models.ChatRoom
+	err := config.DB.
+		Joins("JOIN room_members rm1 ON rm1.room_id = chat_rooms.id AND rm1.user_id = ?", currentUserID).
+		Joins("JOIN room_members rm2 ON rm2.room_id = chat_rooms.id AND rm2.user_id = ?", otherUserID).
+		Where("chat_rooms.is_group = ?", false).
+		Preload("Members").
+		Preload("Creator").
+		First(&existingRoom).Error
+
+	if err == nil {
+		// Direct chat already exists
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Direct chat already exists",
+			"room":    existingRoom,
+		})
+		return
+	}
+
+	// Create new direct chat
+	var otherUser models.User
+	if err := config.DB.First(&otherUser, otherUserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var currentUser models.User
+	if err := config.DB.First(&currentUser, currentUserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Current user not found"})
+		return
+	}
+
+	// Create direct chat room (name not really used for direct chats)
+	room := models.ChatRoom{
+		Name:        currentUser.Name + " & " + otherUser.Name,
+		Description: "",
+		IsGroup:     false,
+		CreatorID:   currentUserID,
+	}
+
+	if err := config.DB.Create(&room).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create direct chat"})
+		return
+	}
+
+	// Add both users as members
+	if err := config.DB.Model(&room).Association("Members").Append([]models.User{currentUser, otherUser}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add members"})
+		return
+	}
+
+	// Load the room with members
+	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Direct chat created successfully",
+		"room":    room,
+	})
 }

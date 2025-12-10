@@ -22,7 +22,7 @@ func InitDB() {
 		log.Fatal("failed to connect database", err)
 	}
 	//Auto Migrate the schema
-	if err := DB.AutoMigrate(&models.User{}, &models.Product{}, &models.ChatRoom{}, &models.Message{}); err != nil {
+	if err := DB.AutoMigrate(&models.User{}, &models.Product{}, &models.ChatRoom{}, &models.Message{}, &models.RoomMember{}); err != nil {
 		log.Fatal("failed to migrate database schema", err)
 	}
 	log.Println("Database connection establish and migrated successfully")

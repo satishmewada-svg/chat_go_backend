@@ -9,16 +9,17 @@ import (
 
 type ChatRoom struct {
 	gorm.Model
-	Name        string         `json:"name" gorm:"not null"`
-	Description string         `json:"description"`
-	IsGroup     bool           `json:"is_group" gorm:"default:true"` // NEW: true for groups, false for direct
-	CreatorID   uint           `json:"creator_id" gorm:"not null"`
-	Creator     User           `json:"creator" gorm:"foreignKey:CreatorID"`
-	Members     []User         `json:"members" gorm:"many2many:room_members;"`
-	Messages    []Message      `json:"messages,omitempty" gorm:"foreignKey:RoomID"`
-	CreatedAt   time.Time      `json:"CreatedAt"`
-	UpdatedAt   time.Time      `json:"UpdatedAt"`
-	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`
+	Name        string `json:"name" gorm:"not null"`
+	Description string `json:"description"`
+	IsGroup     bool   `json:"is_group" gorm:"default:true"`
+	CreatorID   uint   `json:"creator_id" gorm:"not null"`
+	Creator     User   `json:"creator" gorm:"foreignKey:CreatorID"`
+	// CRITICAL FIX: Use joinForeignKey and Reference (not References)
+	Members   []User         `json:"members" gorm:"many2many:room_members;foreignKey:ID;joinForeignKey:RoomID;References:ID;joinReferences:UserID"`
+	Messages  []Message      `json:"messages,omitempty" gorm:"foreignKey:RoomID"`
+	CreatedAt time.Time      `json:"CreatedAt"`
+	UpdatedAt time.Time      `json:"UpdatedAt"`
+	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 type Message struct {
@@ -34,12 +35,13 @@ type Message struct {
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
+// RoomMember - explicit join table
 type RoomMember struct {
-	RoomID    uint      `json:"room_id" gorm:"primaryKey"`
-	UserID    uint      `json:"user_id" gorm:"primaryKey"`
-	JoinedAt  time.Time `json:"joined_at" gorm:"autoCreateTime"`
-	CreatedAt time.Time `json:"CreatedAt"`
-	UpdatedAt time.Time `json:"UpdatedAt"`
+	RoomID    uint      `gorm:"primaryKey;column:room_id" json:"room_id"`
+	UserID    uint      `gorm:"primaryKey;column:user_id" json:"user_id"`
+	JoinedAt  time.Time `gorm:"autoCreateTime" json:"joined_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (RoomMember) TableName() string {

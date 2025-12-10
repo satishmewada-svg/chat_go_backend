@@ -1,11 +1,10 @@
-// controllers/user_controller.go
 package controllers
 
 import (
-	"log"
 	"my-ecomm/config"
 	"my-ecomm/models"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,35 +15,35 @@ func NewUserController() *UserController {
 	return &UserController{}
 }
 
-// GetAllUsers retrieves all users with optional search
 func (uc *UserController) GetAllUsers(c *gin.Context) {
-	currentUserID := c.GetUint("userID")
-	searchQuery := c.Query("search")
-
 	var users []models.User
-	query := config.DB.Where("id != ?", currentUserID) // Exclude current user
 
-	if searchQuery != "" {
-		query = query.Where("name LIKE ? OR email LIKE ?", "%"+searchQuery+"%", "%"+searchQuery+"%")
-	}
+	// Get all users except the current one
+	currentUserID := c.GetUint("userID")
 
-	if err := query.Select("id", "name", "email", "created_at", "updated_at").Find(&users).Error; err != nil {
-		log.Printf("GetAllUsers error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users", "details": err.Error()})
+	if err := config.DB.
+		Select("id, name, username, email, is_online, last_seen_at, created_at, updated_at").
+		Where("id != ?", currentUserID).
+		Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
-// GetUserByID retrieves a specific user by ID
 func (uc *UserController) GetUserByID(c *gin.Context) {
-	userID := c.Param("id")
+	userID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	var user models.User
-	if err := config.DB.Select("id", "name", "email", "created_at", "updated_at").First(&user, userID).Error; err != nil {
-		log.Printf("GetUserByID error: %v", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found", "details": err.Error()})
+	if err := config.DB.
+		Select("id, name, username, email, is_online, last_seen_at, created_at, updated_at").
+		First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 

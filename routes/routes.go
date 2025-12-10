@@ -1,25 +1,41 @@
-// routes/routes.go
 package routes
 
 import (
 	"my-ecomm/controllers"
 	"my-ecomm/middleware"
+	"my-ecomm/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SetupRoutes(router *gin.Engine) {
 	authController := controllers.NewAuthController()
-	productController := &controllers.ProductController{}
-	chatController := controllers.NewChatController()
+	productController := controllers.NewProductController()
 	userController := controllers.NewUserController()
+	chatController := controllers.NewChatController()
+	presenceController := controllers.NewPresenceController() // NEW
 
 	v1 := router.Group("/api/v1")
 	{
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/register", authController.Register)
-			auth.POST("/login", authController.Login)
+			auth.POST("/login", func(c *gin.Context) {
+				authController.Login(c)
+
+				// Mark user as online after login
+				if userID, exists := c.Get("userID"); exists {
+					services.GetPresenceService().UserConnected(userID.(uint))
+				}
+			})
+			auth.POST("/logout", middleware.AuthMiddleware(), func(c *gin.Context) {
+				userID := c.GetUint("userID")
+
+				// Mark user as offline
+				services.GetPresenceService().UserDisconnected(userID)
+
+				c.JSON(200, gin.H{"message": "Logged out successfully"})
+			})
 		}
 
 		protected := v1.Group("")
@@ -34,27 +50,25 @@ func SetupRoutes(router *gin.Engine) {
 			protected.GET("/users", userController.GetAllUsers)
 			protected.GET("/users/:id", userController.GetUserByID)
 
-			// Chat routes
-			chat := protected.Group("/chat")
-			{
-				// Room routes
-				chat.POST("/rooms", chatController.CreateRoom)
-				chat.POST("/direct", chatController.CreateDirectChat)
-				chat.GET("/rooms", chatController.GetUserRooms)
-				chat.GET("/rooms/:id", chatController.GetRoomByID)
-				chat.PUT("/rooms/:id", chatController.UpdateRoom)
-				chat.POST("/rooms/:id/members", chatController.AddMemberToRoom)
+			// Presence routes (NEW)
+			protected.POST("/presence/heartbeat", presenceController.Heartbeat)
+			protected.POST("/presence/status", presenceController.GetOnlineStatus)
+			protected.GET("/presence/online", presenceController.GetAllOnlineUsers)
 
-				// Message routes
-				chat.GET("/rooms/:id/messages", chatController.GetRoomMessages)
-				chat.POST("/rooms/:id/messages", chatController.SendMessage)
-				chat.PUT("/messages/:id", chatController.UpdateMessage)
-				chat.DELETE("/messages/:id", chatController.DeleteMessage)
-				chat.PUT("/messages/:id/read", chatController.MarkMessageAsRead)
+			// Chat room routes
+			protected.POST("/chat/rooms", chatController.CreateRoom)
+			protected.POST("/chat/direct", chatController.CreateDirectChat)
+			protected.GET("/chat/rooms", chatController.GetUserRooms)
+			protected.GET("/chat/rooms/:id", chatController.GetRoomByID)
+			protected.POST("/chat/rooms/:id/members", chatController.AddMemberToRoom)
 
-				// WebSocket route
-				chat.GET("/rooms/:id/ws", chatController.HandleWebSocket)
-			}
+			// Message routes
+			protected.GET("/chat/rooms/:id/messages", chatController.GetRoomMessages)
+			protected.POST("/chat/rooms/:id/messages", chatController.SendMessage)
+			protected.PUT("/chat/messages/:id/read", chatController.MarkMessageAsRead)
+
+			// WebSocket route
+			protected.GET("/chat/rooms/:id/ws", chatController.HandleWebSocket)
 		}
 	}
 }

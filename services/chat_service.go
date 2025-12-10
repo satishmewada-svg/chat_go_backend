@@ -1,3 +1,4 @@
+// services/chat_service.go
 package services
 
 import (
@@ -13,15 +14,19 @@ func NewChatService() *ChatService {
 }
 
 // CreateRoom creates a new chat room
-func (s *ChatService) CreateRoom(name, description string, createdBy uint, memberIDs []uint) (*models.ChatRoom, error) {
+func (s *ChatService) CreateRoom(name, description string, createdBy uint, memberIDs []uint, isGroup bool) (*models.ChatRoom, error) {
 	room := models.ChatRoom{
 		Name:        name,
 		Description: description,
 		CreatorID:   createdBy,
+		IsGroup:     isGroup,
 	}
 
 	// Start transaction
-	tx := config.GetDB().Begin()
+	tx := config.DB.Begin()
+	if tx.Error != nil {
+		return nil, errors.New("failed to start transaction")
+	}
 
 	if err := tx.Create(&room).Error; err != nil {
 		tx.Rollback()
@@ -43,10 +48,12 @@ func (s *ChatService) CreateRoom(name, description string, createdBy uint, membe
 		}
 	}
 
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		return nil, errors.New("failed to commit transaction")
+	}
 
 	// Reload room with members
-	config.GetDB().Preload("Members").First(&room, room.ID)
+	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
 	return &room, nil
 }
 
@@ -54,9 +61,8 @@ func (s *ChatService) CreateRoom(name, description string, createdBy uint, membe
 func (s *ChatService) UpdateRoom(roomID, userID uint, name, description *string) (*models.ChatRoom, error) {
 	var room models.ChatRoom
 
-	// First check if room exists and user has permission
-	err := config.GetDB().First(&room, roomID).Error
-	if err != nil {
+	// First check if room exists
+	if err := config.DB.First(&room, roomID).Error; err != nil {
 		return nil, errors.New("room not found")
 	}
 
@@ -67,7 +73,7 @@ func (s *ChatService) UpdateRoom(roomID, userID uint, name, description *string)
 
 	// Verify user is a member of the room
 	var count int64
-	config.GetDB().
+	config.DB.
 		Table("room_members").
 		Where("room_id = ? AND user_id = ?", roomID, userID).
 		Count(&count)
@@ -91,12 +97,12 @@ func (s *ChatService) UpdateRoom(roomID, userID uint, name, description *string)
 		return nil, errors.New("no fields to update")
 	}
 
-	if err := config.GetDB().Model(&room).Updates(updates).Error; err != nil {
+	if err := config.DB.Model(&room).Updates(updates).Error; err != nil {
 		return nil, errors.New("failed to update room")
 	}
 
 	// Reload room with relationships
-	config.GetDB().Preload("Members").Preload("Creator").First(&room, room.ID)
+	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
 
 	return &room, nil
 }
@@ -106,8 +112,7 @@ func (s *ChatService) UpdateMessage(messageID, userID uint, newContent string) (
 	var message models.Message
 
 	// Find message and verify sender
-	err := config.GetDB().First(&message, messageID).Error
-	if err != nil {
+	if err := config.DB.First(&message, messageID).Error; err != nil {
 		return nil, errors.New("message not found")
 	}
 
@@ -117,12 +122,12 @@ func (s *ChatService) UpdateMessage(messageID, userID uint, newContent string) (
 	}
 
 	// Update message content
-	if err := config.GetDB().Model(&message).Update("content", newContent).Error; err != nil {
+	if err := config.DB.Model(&message).Update("content", newContent).Error; err != nil {
 		return nil, errors.New("failed to update message")
 	}
 
 	// Reload message with sender info
-	config.GetDB().Preload("Sender").First(&message, message.ID)
+	config.DB.Preload("Sender").First(&message, message.ID)
 
 	return &message, nil
 }
@@ -132,8 +137,7 @@ func (s *ChatService) DeleteMessage(messageID, userID uint) error {
 	var message models.Message
 
 	// Find message and verify sender
-	err := config.GetDB().First(&message, messageID).Error
-	if err != nil {
+	if err := config.DB.First(&message, messageID).Error; err != nil {
 		return errors.New("message not found")
 	}
 
@@ -143,7 +147,7 @@ func (s *ChatService) DeleteMessage(messageID, userID uint) error {
 	}
 
 	// Soft delete the message
-	if err := config.GetDB().Delete(&message).Error; err != nil {
+	if err := config.DB.Delete(&message).Error; err != nil {
 		return errors.New("failed to delete message")
 	}
 
@@ -154,33 +158,50 @@ func (s *ChatService) DeleteMessage(messageID, userID uint) error {
 func (s *ChatService) GetRoomByID(roomID uint, userID uint) (*models.ChatRoom, error) {
 	var room models.ChatRoom
 
-	// Check if user is a member of the room
-	err := config.GetDB().
-		Preload("Members").
-		Joins("JOIN room_members ON room_members.chat_room_id = chat_rooms.id").
-		Where("chat_rooms.id = ? AND room_members.user_id = ?", roomID, userID).
-		First(&room).Error
-
-	if err != nil {
-		return nil, errors.New("room not found or access denied")
+	// First get the room
+	if err := config.DB.First(&room, roomID).Error; err != nil {
+		return nil, errors.New("room not found")
 	}
+
+	// Check if user is a member
+	var count int64
+	config.DB.
+		Table("room_members").
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Count(&count)
+
+	if count == 0 {
+		return nil, errors.New("access denied")
+	}
+
+	// Load relationships
+	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
 
 	return &room, nil
 }
 
 // GetUserRooms gets all rooms for a user
 func (s *ChatService) GetUserRooms(userID uint) ([]models.ChatRoom, error) {
-	var rooms []models.ChatRoom
+	// Get room IDs where user is a member
+	var roomIDs []uint
+	if err := config.DB.
+		Table("room_members").
+		Where("user_id = ?", userID).
+		Pluck("room_id", &roomIDs).Error; err != nil {
+		return nil, errors.New("failed to retrieve rooms")
+	}
 
-	err := config.GetDB().
+	if len(roomIDs) == 0 {
+		return []models.ChatRoom{}, nil
+	}
+
+	var rooms []models.ChatRoom
+	if err := config.DB.
+		Where("id IN ?", roomIDs).
 		Preload("Members").
 		Preload("Creator").
-		Joins("JOIN room_members ON room_members.chat_room_id = chat_rooms.id").
-		Where("room_members.user_id = ?", userID).
-		Order("chat_rooms.updated_at DESC").
-		Find(&rooms).Error
-
-	if err != nil {
+		Order("updated_at DESC").
+		Find(&rooms).Error; err != nil {
 		return nil, errors.New("failed to retrieve rooms")
 	}
 
@@ -191,9 +212,9 @@ func (s *ChatService) GetUserRooms(userID uint) ([]models.ChatRoom, error) {
 func (s *ChatService) SendMessage(content string, roomID, senderID uint) (*models.Message, error) {
 	// Verify user is member of room
 	var count int64
-	config.GetDB().
+	config.DB.
 		Table("room_members").
-		Where("chat_room_id = ? AND user_id = ?", roomID, senderID).
+		Where("room_id = ? AND user_id = ?", roomID, senderID).
 		Count(&count)
 
 	if count == 0 {
@@ -207,12 +228,12 @@ func (s *ChatService) SendMessage(content string, roomID, senderID uint) (*model
 		IsRead:   false,
 	}
 
-	if err := config.GetDB().Create(&message).Error; err != nil {
+	if err := config.DB.Create(&message).Error; err != nil {
 		return nil, errors.New("failed to send message")
 	}
 
 	// Preload sender info
-	config.GetDB().Preload("Sender").First(&message, message.ID)
+	config.DB.Preload("Sender").First(&message, message.ID)
 
 	return &message, nil
 }
@@ -221,9 +242,9 @@ func (s *ChatService) SendMessage(content string, roomID, senderID uint) (*model
 func (s *ChatService) GetRoomMessages(roomID, userID uint, limit, offset int) ([]models.Message, error) {
 	// Verify user is member of room
 	var count int64
-	config.GetDB().
+	config.DB.
 		Table("room_members").
-		Where("chat_room_id = ? AND user_id = ?", roomID, userID).
+		Where("room_id = ? AND user_id = ?", roomID, userID).
 		Count(&count)
 
 	if count == 0 {
@@ -231,7 +252,7 @@ func (s *ChatService) GetRoomMessages(roomID, userID uint, limit, offset int) ([
 	}
 
 	var messages []models.Message
-	query := config.GetDB().
+	query := config.DB.
 		Preload("Sender").
 		Where("room_id = ?", roomID).
 		Order("created_at DESC")
@@ -254,40 +275,66 @@ func (s *ChatService) GetRoomMessages(roomID, userID uint, limit, offset int) ([
 func (s *ChatService) MarkMessageAsRead(messageID, userID uint) error {
 	var message models.Message
 
-	// Verify user is member of the room
-	err := config.GetDB().
-		Joins("JOIN room_members ON room_members.chat_room_id = messages.room_id").
-		Where("messages.id = ? AND room_members.user_id = ?", messageID, userID).
-		First(&message).Error
-
-	if err != nil {
-		return errors.New("message not found or access denied")
+	// First get the message
+	if err := config.DB.First(&message, messageID).Error; err != nil {
+		return errors.New("message not found")
 	}
 
-	return config.GetDB().Model(&message).Update("is_read", true).Error
+	// Verify user is member of the room
+	var count int64
+	config.DB.
+		Table("room_members").
+		Where("room_id = ? AND user_id = ?", message.RoomID, userID).
+		Count(&count)
+
+	if count == 0 {
+		return errors.New("access denied")
+	}
+
+	return config.DB.Model(&message).Update("is_read", true).Error
 }
 
 // AddMemberToRoom adds a new member to a room
 func (s *ChatService) AddMemberToRoom(roomID, userID, newMemberID uint) error {
-	// Verify user is creator or member of room
 	var room models.ChatRoom
-	err := config.GetDB().
-		Joins("JOIN room_members ON room_members.chat_room_id = chat_rooms.id").
-		Where("chat_rooms.id = ? AND (chat_rooms.creator_id = ? OR room_members.user_id = ?)",
-			roomID, userID, userID).
-		First(&room).Error
 
-	if err != nil {
-		return errors.New("room not found or access denied")
+	// Get room and verify it exists
+	if err := config.DB.First(&room, roomID).Error; err != nil {
+		return errors.New("room not found")
 	}
 
-	// Add new member
+	// Verify user is member or creator of room
+	var count int64
+	config.DB.
+		Table("room_members").
+		Where("room_id = ? AND user_id = ?", roomID, userID).
+		Count(&count)
+
+	isCreator := room.CreatorID == userID
+
+	if count == 0 && !isCreator {
+		return errors.New("access denied")
+	}
+
+	// Find the new member
 	var newMember models.User
-	if err := config.GetDB().First(&newMember, newMemberID).Error; err != nil {
+	if err := config.DB.First(&newMember, newMemberID).Error; err != nil {
 		return errors.New("user not found")
 	}
 
-	if err := config.GetDB().Model(&room).Association("Members").Append(&newMember); err != nil {
+	// Check if already a member
+	var existingCount int64
+	config.DB.
+		Table("room_members").
+		Where("room_id = ? AND user_id = ?", roomID, newMemberID).
+		Count(&existingCount)
+
+	if existingCount > 0 {
+		return errors.New("user is already a member")
+	}
+
+	// Add the member
+	if err := config.DB.Model(&room).Association("Members").Append(&newMember); err != nil {
 		return errors.New("failed to add member")
 	}
 

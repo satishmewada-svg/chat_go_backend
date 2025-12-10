@@ -11,7 +11,7 @@ type ChatRoom struct {
 	gorm.Model
 	Name        string `json:"name" gorm:"not null"`
 	Description string `json:"description"`
-	IsGroup     bool   `json:"is_group" gorm:"default:true"`
+	IsGroup     bool   `json:"is_group" gorm:"default:false"`
 	CreatorID   uint   `json:"creator_id" gorm:"not null"`
 	Creator     User   `json:"creator" gorm:"foreignKey:CreatorID"`
 	// CRITICAL FIX: Use joinForeignKey and Reference (not References)

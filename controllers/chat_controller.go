@@ -563,45 +563,42 @@ func (cc *ChatController) CreateDirectChat(c *gin.Context) {
 	currentUserID := c.GetUint("userID")
 	otherUserID := req.UserID
 
-	// Prevent creating direct chat with self
 	if currentUserID == otherUserID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot create direct chat with yourself"})
 		return
 	}
-
-	// Check if direct chat already exists
 	var existingRoom models.ChatRoom
+
 	err := config.DB.
+		Table("chat_rooms").
+		Select("chat_rooms.*").
 		Joins("JOIN room_members rm1 ON rm1.room_id = chat_rooms.id AND rm1.user_id = ?", currentUserID).
 		Joins("JOIN room_members rm2 ON rm2.room_id = chat_rooms.id AND rm2.user_id = ?", otherUserID).
 		Where("chat_rooms.is_group = ?", false).
-		Preload("Members").
-		Preload("Creator").
 		First(&existingRoom).Error
 
 	if err == nil {
-		// Direct chat already exists
+		// Room exists → return existing room (do NOT create new)
+		config.DB.Preload("Members").Preload("Creator").First(&existingRoom, existingRoom.ID)
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Direct chat already exists",
 			"room":    existingRoom,
 		})
 		return
 	}
+	var currentUser, otherUser models.User
 
-	// Create new direct chat
-	var otherUser models.User
-	if err := config.DB.First(&otherUser, otherUserID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	var currentUser models.User
 	if err := config.DB.First(&currentUser, currentUserID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Current user not found"})
 		return
 	}
 
-	// Create direct chat room (name not really used for direct chats)
+	if err := config.DB.First(&otherUser, otherUserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Other user not found"})
+		return
+	}
+
+	// Create the direct chat room
 	room := models.ChatRoom{
 		Name:        currentUser.Name + " & " + otherUser.Name,
 		Description: "",
@@ -614,13 +611,13 @@ func (cc *ChatController) CreateDirectChat(c *gin.Context) {
 		return
 	}
 
-	// Add both users as members
-	if err := config.DB.Model(&room).Association("Members").Append([]models.User{currentUser, otherUser}); err != nil {
+	// Add users to room
+	if err := config.DB.Model(&room).Association("Members").Append(&currentUser, &otherUser); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add members"})
 		return
 	}
 
-	// Load the room with members
+	// Reload with relations
 	config.DB.Preload("Members").Preload("Creator").First(&room, room.ID)
 
 	c.JSON(http.StatusCreated, gin.H{

@@ -32,6 +32,7 @@ type Message struct {
 	Timestamp time.Time   `json:"timestamp,omitempty"`
 	UserID    uint        `json:"userId,omitempty"`
 	Username  string      `json:"username,omitempty"`
+	Typing    interface{} `json:"typing,omitempty"` // NEW: for typing indicator
 }
 
 // Client represents a websocket client
@@ -122,17 +123,20 @@ func (h *Hub) Run() {
 		case broadcast := <-h.Broadcast:
 			h.mu.Lock()
 			if clients, ok := h.Rooms[broadcast.RoomID]; ok {
-				log.Printf("Broadcasting message to room %d, clients: %d", broadcast.RoomID, len(clients))
+				log.Printf("[HUB-BROADCAST] Sending message to room %d with %d clients\n", broadcast.RoomID, len(clients))
 				for client := range clients {
 					select {
 					case client.Send <- broadcast.Message:
+						log.Printf("  ✓ Sent to client %d in room %d\n", client.ID, broadcast.RoomID)
 					default:
 						// Client's send channel is full, close and remove
+						log.Printf("  ✗ Client %d send channel FULL - removing from room %d\n", client.ID, broadcast.RoomID)
 						close(client.Send)
 						delete(clients, client)
-						log.Printf("Removed client %d from room %d (send failed)", client.ID, broadcast.RoomID)
 					}
 				}
+			} else {
+				log.Printf("✗ Room %d not found in hub (no clients connected)\n", broadcast.RoomID)
 			}
 			h.mu.Unlock()
 
@@ -222,6 +226,24 @@ func (c *Client) ReadPump() {
 			}
 			if data, err := json.Marshal(pongMsg); err == nil {
 				c.Send <- data
+			}
+			continue
+
+		case "typing":
+			// NEW: Handle typing indicator - broadcast to other clients
+			typingMsg := map[string]interface{}{
+				"type":     "typing",
+				"userId":   c.ID,
+				"username": c.Username,
+				"typing":   msg.Typing, // true or false from frontend
+			}
+
+			if data, err := json.Marshal(typingMsg); err == nil {
+				c.Hub.Broadcast <- &BroadcastMessage{
+					RoomID:  c.RoomID,
+					Message: data,
+				}
+				log.Printf("Client %d typing status: %v in room %d", c.ID, msg.Typing, c.RoomID)
 			}
 			continue
 
